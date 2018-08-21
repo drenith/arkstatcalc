@@ -1,0 +1,350 @@
+<html><head>
+<meta charset="UTF-8">
+<style type="text/css">
+.fill {
+	width: 100%;
+}
+
+.center {
+    margin: auto;
+    width: 350px;
+    border: 3px solid green;
+    padding: 10px;
+}
+</style>
+<script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
+<script src="values.json"></script>
+<script>
+"use strict";
+
+const DEBUG = false;
+
+const MAX_WILD_LEVEL = 450;
+const MAX_WILD_LEVEL_STAT = 100;
+const MAX_DOMESTIC_LEVELS = 71;
+
+let MULTIPLIERS = [
+    [
+      0.14,
+      0.44,
+      0.2,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      0.14,
+      0.44,
+      0.17,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      1,
+      1,
+      1
+    ]
+];
+
+let STAT = {
+	health : 0,
+	stamina : 1,
+	oxygen: 2,
+	food: 3,
+	weight: 4,
+	damage: 5,
+	speed: 6,
+	torpor: 7
+}
+
+let BaseValue = 0,
+	IncPerWildLevel = 1,
+	IncPerTamedLevel = 2,
+	AddWhenTamed = 3,
+	MultAffinity = 4;
+
+let imprintingStatScaleMultiplier = 1;
+
+function statcalc(stat, dino, levelWild, levelDom, imprintingBonus) {
+	let stat_index = STAT[stat];
+	
+	let statsRaw = dino.statsRaw.slice(0);
+	
+	for(let s=0; s < 8; s++){
+		let tmp = [0, 0, 0, 0, 0];
+		if( statsRaw[s] != null ) {
+			for(let i=0; i < 5; i++) {
+				tmp[i] = statsRaw[s][i] != null ? statsRaw[s][i] : 0;
+			}
+		}
+		
+		//public double[][] multipliers; // multipliers[stat][m], m: 0:tamingadd, 1:tamingmult, 2:levelupdom, 3:levelupwild
+		
+		tmp[BaseValue] = tmp[BaseValue];
+		// don't apply the multiplier if AddWhenTamed is negative (e.g. Giganotosaurus, Griffin)
+		tmp[AddWhenTamed] = tmp[AddWhenTamed] * (tmp[AddWhenTamed] > 0 ? MULTIPLIERS[s][0] : 1);
+		// don't apply the multiplier if MultAffinity is negative (e.g. Aberration letiants)
+		tmp[MultAffinity] = tmp[MultAffinity] * (tmp[MultAffinity] > 0 ? MULTIPLIERS[s][1] : 1);
+		tmp[IncPerTamedLevel] = tmp[IncPerTamedLevel] * MULTIPLIERS[s][2];
+		tmp[IncPerWildLevel] = tmp[IncPerWildLevel] * MULTIPLIERS[s][3];
+		
+		statsRaw[s] = tmp;
+	}
+	
+	let stats = statsRaw[stat_index];
+	
+	let dom = true;
+	let add = 0,
+		domMultAffinity = 0,
+		domMult = 1,
+		imprintingM = 1,
+		tamedBaseHP = 1;
+		
+	let tamingEff = 1;
+	
+	if (dom) {
+		add = stats[AddWhenTamed];
+		domMultAffinity = stats[MultAffinity];
+		// the multiplicative bonus is only multiplied with the TE if it is positive (i.e. negative boni won't get less bad if the TE is low)
+		if (domMultAffinity >= 0) {
+			domMultAffinity *= tamingEff;
+		}
+		domMult = (tamingEff >= 0 ? (1 + domMultAffinity) : 1) * (1 + levelDom * stats[IncPerTamedLevel]);
+		if (imprintingBonus > 0 && stat !== "stamina" && stat !== "oxygen" && (stat !== "speed" || dino.NoImprintingForSpeed !== true)) {
+			imprintingM = 1 + 0.2 * imprintingBonus * imprintingStatScaleMultiplier;
+		}
+		if (stat === "health") {
+			tamedBaseHP = dino.TamedBaseHealthMultiplier ? dino.TamedBaseHealthMultiplier : 1;
+		}
+	}
+	
+	let result = (stats[BaseValue] * tamedBaseHP * (1 + stats[IncPerWildLevel] * levelWild) * imprintingM + add) * domMult;
+
+	return result >= 0 ? result.toFixed(precision(stat)) : 0;
+}
+
+function precision(s) {
+	if (s === "damage" || s === "speed") {
+		return 3;
+	}
+	return 1;
+}
+
+function toPercent(num){
+	return (num * 100).toFixed(1);
+}
+
+function find_combinations(stat, dino, target, possible_imprints){
+	let combinations = [];
+	
+	if(stat === "torpor"){
+		for(let wild = 0; wild < MAX_WILD_LEVEL; wild++){
+			for(let i = 0; i < possible_imprints.length; i++){
+				if(close_enough(statcalc(stat, dino, wild, 0, possible_imprints[i]), target, 1)){
+					combinations.push([ wild, 0, possible_imprints[i] ]);
+				}
+			}
+		}
+		return combinations;
+	}
+	
+	for(let wild = 0; wild <= MAX_WILD_LEVEL_STAT; wild++) {
+		for(let domestic = 0; domestic <= MAX_DOMESTIC_LEVELS; domestic++){
+			if(possible_imprints){
+				for(let i = 0; i < possible_imprints.length; i++){
+					if(close_enough(statcalc(stat, dino, wild, domestic, possible_imprints[i]), target, stat === "damage" || stat === "speed" ? 0.001 : 1)){
+						combinations.push([ wild, domestic, possible_imprints[i] ]);
+					}
+				}
+			} else {
+				for(let imprint = 0; imprint <= 1; imprint += 0.01){
+					if(close_enough(statcalc(stat, dino, wild, domestic, imprint), target, 1)){
+						combinations.push([ wild, domestic, imprint ]);
+					}
+				}
+			}
+		}
+		
+		if(stat === "speed") {
+			wild = Infinity;
+		}
+		
+		debug(wild);
+	}
+	
+	return combinations;
+}
+
+function close_enough(actual, target, tolerance){
+	return Math.abs(target - actual) < tolerance;
+}
+
+function get_dino(creature){
+	for(let i=0; i < VALUES.species.length; i++) {
+		let dino = VALUES.species[i];
+		if(dino.name.toLowerCase() === creature.toLowerCase()){
+			return dino;
+		}
+	}
+	throw "Unable to find creature '" + creature + "'";
+}
+
+console.log(get_dino("allosaurus"));
+console.log("hp - " + statcalc("health", get_dino("allosaurus"), 31, 21, 0.5));
+console.log("stam - " + statcalc("stamina", get_dino("allosaurus"), 22, 0, 0.5));
+console.log("oxy - " + statcalc("oxygen", get_dino("allosaurus"), 29, 0, 0.5));
+console.log("food - " + statcalc("food", get_dino("allosaurus"), 34, 0, 0.5));
+console.log("weight - " + statcalc("weight", get_dino("allosaurus"), 36, 0, 0.5));
+console.log("damage - " + toPercent(statcalc("damage", get_dino("allosaurus"), 31, 0, 0.5)));
+console.log("speed - " + toPercent(statcalc("speed", get_dino("allosaurus"), 36, 0, 0.5)));
+console.log("torpor - " + statcalc("torpor", get_dino("allosaurus"), 219, 0, 0.5));
+
+$(() => {
+	
+	$('#species').append(Object.values(VALUES.species).map(x => x.name).sort().map( x => $('<option>').val(x).text(x) ));
+	$('#stats').append(Object.keys(STAT).map(s => {
+		return $('<tr>').append(
+			$('<td>').append(
+				$('<label>').attr('for', s).text(s)
+			)
+		).append(
+			$('<td>').append(
+				$('<input>').attr('type', 'number').attr('id', s).attr('step', s === "damage" || s === "speed" ? 0.001 : 0.1)
+			)
+		).append(
+			$('<td>').append(
+				$('<span>').attr('id', s + "_wild").text('?')
+			)
+		).append(
+			$('<td>').append(
+				$('<span>').attr('id', s + "_tamed").text('?')
+			)
+		).append(
+			$('<td>').append(
+				$('<button>').attr('id', s + "_calc").text('C').on('click', () => {
+					let selection = get_selection();
+					console.log(selection);
+					let combinations = find_combinations(s, selection.dino, selection[s], [ selection.imprint ] );
+					alert(combinations.map( c => c[0] + ", " + c[1] + ", " + (c[2] * 100).toFixed(0) ).join("\n"));
+				})
+			)
+		)
+	}));
+	
+	$('#calculate').on('click', () => {
+		let selection = get_selection();
+
+		let combinations = {};
+		
+		combinations.food = find_combinations("food", selection.dino, selection.food);
+		
+		let possible_imprints = combinations.food.map( x => x[2] ).filter( (value, index, self) => self.indexOf(value) === index );
+		
+		Object.keys(STAT).forEach((stat) => {
+			if(stat !== "food") {
+				combinations[stat] = find_combinations(stat, selection.dino, selection[stat], possible_imprints);
+			}
+		});
+		
+		console.log(combinations);
+	});
+	
+	$('#level').val(248);
+	$('#imprint').val(50);	
+	$('#health').val(10648);
+	$('#stamina').val(800);
+	$('#oxygen').val(585);
+	$('#food').val(16698);
+	$('#weight').val(719);
+	$('#damage').val(338.1);
+	$('#speed').val(100);
+	$('#torpor').val(15554.5);
+	$('#species').val("Allosaurus").change();
+});
+
+function get_selection(){
+	return {
+		dino : get_dino($('#species option:selected').val()),
+		health : parseFloat($('#health').val()),
+		stamina : parseFloat($('#stamina').val()),
+		oxygen : parseFloat($('#oxygen').val()),
+		food : parseFloat($('#food').val()),
+		weight : parseFloat($('#weight').val()),
+		damage : parseFloat($('#damage').val()) / 100,
+		speed : parseFloat($('#speed').val()) / 100,
+		torpor : parseFloat($('#torpor').val()),
+		level : parseFloat($('#level').val()),
+		imprint : parseFloat($('#imprint').val()) / 100
+	}
+}
+
+function debug(){
+	if(DEBUG) {
+		console.log(arguments);
+	}
+}
+
+</script>
+</head><body>
+<div class="center">
+	<select id="species" class="fill"></select>
+	<table class="fill">
+		<tr>
+			<td>
+				<label for="imprint">Imprint</label>
+			</td>
+			<td>
+				<input id="imprint" type="number" min="0" max="100" value="0" class="fill"/>
+			</td>
+		</tr>
+		<tr>
+			<td>
+				<label for="level">Level</label>
+			</td>
+			<td>
+				<input id="level" type="number" value="0" class="fill"/>
+			</td>
+		</tr>
+	</table>
+	<table id="stats" border="1">
+		<tr>
+			<th>Stat</th>
+			<th>Value</th>
+			<th>Wild</th>
+			<th>Tamed</th>
+			<th>Test</th>
+		</tr>
+	</table>
+	<button id="calculate">Calculate</button>
+	
+</div>
+</body>
+</html>
